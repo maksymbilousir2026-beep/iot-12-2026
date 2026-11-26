@@ -16,20 +16,30 @@ class FileCorrupted(FileHandlerError):
     pass
 
 
-def logged(exception, mode="console", log_file="file_events.log"):
+class InvalidDataType(FileHandlerError):
+    pass
 
+
+def logged(exception, mode="console", log_file="file_events.log"):
     if mode not in ("console", "file"):
         raise ValueError('mode має бути "console" або "file"')
 
-    logger = logging.getLogger(f"logged.{mode}.{log_file if mode == 'file' else ''}")
+    logger_name = (
+        f"logged.file.{log_file}" if mode == "file" else "logged.console"
+    )
+    logger = logging.getLogger(logger_name)
     logger.setLevel(logging.INFO)
     logger.propagate = False
 
     if not logger.handlers:
-        handler = (logging.StreamHandler() if mode == "console"
-                   else logging.FileHandler(log_file, encoding="utf-8"))
-        handler.setFormatter(logging.Formatter(
-            "%(asctime)s | %(levelname)s | %(message)s"))
+        handler = (
+            logging.StreamHandler()
+            if mode == "console"
+            else logging.FileHandler(log_file, encoding="utf-8", delay=True)
+        )
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
+        )
         logger.addHandler(handler)
 
     def decorator(func):
@@ -40,8 +50,10 @@ def logged(exception, mode="console", log_file="file_events.log"):
                 logger.info("Операція '%s' виконана успішно", func.__name__)
                 return result
             except exception as e:
-                logger.error("Помилка в '%s': %s: %s",
-                             func.__name__, type(e).__name__, e)
+                logger.error(
+                    "Помилка в '%s': %s: %s",
+                    func.__name__, type(e).__name__, e,
+                )
                 raise
         return wrapper
     return decorator
@@ -57,7 +69,18 @@ class JsonFileHandler:
         if not os.path.isfile(self.filepath):
             raise FileNotFound(f"Файл не знайдено: {self.filepath}")
 
-    @logged(FileCorrupted, mode="console")
+    @staticmethod
+    @logged(FileCorrupted, mode="file")
+    def create(path, filename):
+        filepath = os.path.join(path, filename)
+        try:
+            with open(filepath, "x", encoding="utf-8"):
+                pass
+        except OSError as e:
+            raise FileCorrupted(f"Не вдалося створити файл: {e}") from e
+        return JsonFileHandler(path, filename)
+
+    @logged(FileCorrupted, mode="file")
     def read(self):
         try:
             with open(self.filepath, "r", encoding="utf-8") as f:
@@ -66,7 +89,7 @@ class JsonFileHandler:
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
             raise FileCorrupted(f"Не вдалося прочитати файл: {e}") from e
 
-    @logged(FileCorrupted, mode="console")
+    @logged(FileCorrupted, mode="file")
     def write(self, data):
         try:
             text = json.dumps(data, ensure_ascii=False, indent=4)
@@ -75,34 +98,34 @@ class JsonFileHandler:
         except (OSError, TypeError, ValueError) as e:
             raise FileCorrupted(f"Не вдалося записати у файл: {e}") from e
 
-    @logged(FileCorrupted, mode="console")
+    @logged(FileHandlerError, mode="file")
     def append(self, data):
-
         current = self.read()
 
         if current is None:
             new_content = data
         elif isinstance(current, list):
-            new_content = current + (data if isinstance(data, list) else [data])
+            to_add = data if isinstance(data, list) else [data]
+            new_content = current + to_add
         elif isinstance(current, dict) and isinstance(data, dict):
             new_content = {**current, **data}
         else:
-            raise TypeError(
+            raise InvalidDataType(
                 f"Не можна дописати {type(data).__name__} "
-                f"до {type(current).__name__}")
+                f"до {type(current).__name__}"
+            )
 
         self.write(new_content)
 
 
 if __name__ == "__main__":
     path, name = ".", "data.json"
-
     try:
-        JsonFileHandler(path, name)
+        handler = JsonFileHandler(path, name)
     except FileNotFound:
-        open(os.path.join(path, name), "w").close()
+        handler = JsonFileHandler.create(path, name)
 
-    handler = JsonFileHandler(path, name)
-    handler.write([{"імʼя": "Олена", "вік": 28}])
-    handler.append({"імʼя": "Іван", "вік": 35})
+    handler.write([{"імʼя": "Паша", "вік": 17}])
+    handler.append({"імʼя": "Олег", "вік": 18})
     print(handler.read())
+    print(os.path.abspath(handler.filepath))
